@@ -100,7 +100,3 @@ if all_data:
     st.success(f"🏆 **Proveedor sugerido:** {mejor['Proveedor']} (USD {mejor['Valor Total (USD)']:.2f})")
 else:
     st.error("❌ No se encontraron datos útiles en los archivos cargados o texto ingresado.")
-
-
-
-          
