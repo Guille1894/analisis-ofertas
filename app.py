@@ -7,7 +7,7 @@ from io import BytesIO
 st.set_page_config(page_title="Análisis de Ofertas de Compra", layout="wide")
 st.title("📄 Análisis Automático de Ofertas de Compra")
 
-uploaded_files = st.file_uploader("Cargar una o más ofertas en PDF (hasta 6)", type=["pdf"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("Cargar una o más ofertas en PDF (hasta 6)", type=["pdf"], accept_multiple_files=True, key="upload_pdf_main")
 
 @st.cache_data
 def extract_pdf_text(file):
@@ -15,16 +15,17 @@ def extract_pdf_text(file):
         text = "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
     return text
 
-def extract_from_unstructured(text, proveedor):
-    pattern = r"(?i)(\d{2,}\w*-?\w*).*?(valvula.*?)(\d+[.,]?\d*)\s+\D*(\d+[.,]?\d*)\s+(\d+[.,]?\d*)"
+def extract_from_custom_format(text, proveedor):
+    pattern = r"(?P<item>\d{2,})\s+(?P<codigo>[A-Z0-9-]{3,})\s+(?P<cantidad>\d+[.,]?\d*)\s+(?P<descripcion>[A-Z ].*?)\s+(?P<unitario>\d+[.,]?\d*)\s+(?P<total>\d+[.,]?\d*)"
     matches = re.findall(pattern, text)
+
     condiciones = {
         "Incoterm": "", "Plazo": "", "Forma de pago": ""
     }
     for line in text.split("\n"):
         if "FOB" in line or "CFR" in line:
             condiciones["Incoterm"] = line.strip()
-        if "día" in line.lower() or "dias" in line.lower():
+        if "días" in line.lower() or "dias" in line.lower():
             condiciones["Plazo"] = line.strip()
         if "pago" in line.lower():
             condiciones["Forma de pago"] = line.strip()
@@ -32,11 +33,11 @@ def extract_from_unstructured(text, proveedor):
     data = []
     for m in matches:
         try:
-            cod = m[0]
-            desc = m[1].strip()
+            cod = m[1]
+            desc = m[3].strip()
             qty = float(m[2].replace(",", ""))
-            unit = float(m[3].replace(",", ""))
-            total = float(m[4].replace(",", ""))
+            unit = float(m[4].replace(",", ""))
+            total = float(m[5].replace(",", ""))
             data.append({
                 "Código": cod,
                 "Descripción": desc,
@@ -66,7 +67,7 @@ if uploaded_files:
             st.text(pdf_text[:3000] + ("..." if len(pdf_text) > 3000 else ""))
 
         proveedor = file.name.split()[0].replace("_", " ")
-        df = extract_from_unstructured(pdf_text, proveedor)
+        df = extract_from_custom_format(pdf_text, proveedor)
 
         if df.empty:
             st.warning(f"⚠️ No se encontraron datos estructurados en el archivo: {file.name}")
@@ -126,3 +127,5 @@ if uploaded_files:
         )
     else:
         st.error("❌ No se encontraron datos útiles en los archivos cargados.")
+
+          
