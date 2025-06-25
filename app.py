@@ -1,132 +1,106 @@
 import streamlit as st
-import pdfplumber
-import re
 import pandas as pd
+import fitz  # PyMuPDF
+import re
 from io import BytesIO
 
-st.set_page_config(page_title="Análisis de Ofertas de Compra", layout="wide")
+st.set_page_config(page_title="Análisis Automático de Ofertas de Compra")
+
 st.title("📄 Análisis Automático de Ofertas de Compra")
+st.markdown("Cargar una o más ofertas en PDF (hasta 6)")
 
-uploaded_files = st.file_uploader("Cargar una o más ofertas en PDF (hasta 6)", type=["pdf"], accept_multiple_files=True, key="upload_pdf_main")
+uploaded_files = st.file_uploader(" ", type=["pdf"], accept_multiple_files=True)
 
-@st.cache_data
-def extract_pdf_text(file):
-    with pdfplumber.open(file) as pdf:
-        text = "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
-    return text
+# NUEVO: opción para ingresar texto manualmente
+st.markdown("### 📝 O pegar texto de una oferta manualmente (opcional)")
+manual_text = st.text_area("Ingresar texto de una cotización:", height=300)
 
-def extract_items_from_offer(text, proveedor):
-    pattern = r"(?P<item>\d{2,})\s+(?P<codigo>[A-Z0-9.-]{3,})\s+(?P<cantidad>\d+[.,]?\d*)\s+(?P<descripcion>[A-Z\"'\-\(\)/ \d°%:,\.]+?)\s+(?P<unitario>\d{1,3}(?:\.\d{3})*,\d{2})\s+(?P<total>\d{1,3}(?:\.\d{3})*,\d{2})"
-    matches = re.findall(pattern, text)
+def extract_text_from_pdf(file):
+    try:
+        doc = fitz.open(stream=file.read(), filetype="pdf")
+        text = "\n".join([page.get_text() for page in doc])
+        return text
+    except Exception as e:
+        return ""
 
-    condiciones = {
-        "Incoterm": "", "Plazo": "", "Forma de pago": ""
-    }
-    for line in text.split("\n"):
-        if "FOB" in line or "CFR" in line:
-            condiciones["Incoterm"] = line.strip()
-        if "días" in line.lower() or "dias" in line.lower():
-            condiciones["Plazo"] = line.strip()
-        if "pago" in line.lower():
-            condiciones["Forma de pago"] = line.strip()
+def parse_offer_text(text):
+    items = []
+    proveedor = ""
+    plazo = ""
+    forma_pago = ""
+    incoterm = ""
 
-    data = []
-    for m in matches:
-        try:
-            cod = m[1]
-            desc = m[3].strip()
-            qty = float(m[2].replace(",", ""))
-            unit = float(m[4].replace(".", "").replace(",", "."))
-            total = float(m[5].replace(".", "").replace(",", "."))
-            data.append({
-                "Código": cod,
-                "Descripción": desc,
-                "Cantidad (KG)": qty,
-                "Precio Unitario (USD)": unit,
-                "Valor Total (USD)": total,
-                "Proveedor": proveedor,
-                "Incoterm": condiciones["Incoterm"],
-                "Plazo": condiciones["Plazo"],
-                "Forma de pago": condiciones["Forma de pago"]
-            })
-        except:
-            continue
-    return pd.DataFrame(data)
+    # Detectar proveedor desde encabezado
+    proveedor_match = re.search(r'(?:Proveedor|PROVEEDOR|Proveedor:)\s*[:\-]?\s*(.+)', text)
+    if proveedor_match:
+        proveedor = proveedor_match.group(1).strip().split("\n")[0]
 
-if uploaded_files:
-    if len(uploaded_files) > 6:
-        st.warning("⚠️ Por ahora se admiten hasta 6 archivos a la vez.")
-        uploaded_files = uploaded_files[:6]
+    # Detectar condiciones comerciales
+    if "forma de pago" in text.lower():
+        forma_pago_match = re.search(r'forma de pago[:\-]?\s*(.+)', text, re.IGNORECASE)
+        if forma_pago_match:
+            forma_pago = forma_pago_match.group(1).strip().split("\n")[0]
+    if "plazo de entrega" in text.lower():
+        plazo_match = re.search(r'plazo de entrega[:\-]?\s*(.+)', text, re.IGNORECASE)
+        if plazo_match:
+            plazo = plazo_match.group(1).strip().split("\n")[0]
+    if "incoterm" in text.lower():
+        incoterm_match = re.search(r'incoterm[:\-]?\s*(.+)', text, re.IGNORECASE)
+        if incoterm_match:
+            incoterm = incoterm_match.group(1).strip().split("\n")[0]
 
-    all_data = []
-    for file in uploaded_files:
-        pdf_text = extract_pdf_text(file)
+    # Detectar líneas de ítems con precios
+    for match in re.finditer(r'(?P<codigo>\d{4,})[^\n]*?(?P<desc>[A-Z \-\,0-9\(\)/]+)\s+(?P<cant>\d+)\s+(?P<unit>\d{2,}[,.]?\d*)\s+(?P<total>\d{2,}[,.]?\d*)', text):
+        items.append({
+            "Código": match.group("codigo"),
+            "Descripción": match.group("desc").strip(),
+            "Cantidad": int(match.group("cant")),
+            "Precio Unitario (USD)": float(match.group("unit").replace(",", "")),
+            "Valor Total (USD)": float(match.group("total").replace(",", "")),
+            "Proveedor": proveedor,
+            "Incoterm": incoterm,
+            "Plazo": plazo,
+            "Forma de Pago": forma_pago
+        })
 
-        st.markdown(f"**Texto extraído de:** `{file.name}`")
-        with st.expander("Mostrar texto del PDF"):
-            st.text(pdf_text[:3000] + ("..." if len(pdf_text) > 3000 else ""))
+    return items
 
-        proveedor = file.name.split()[0].replace("_", " ")
-        df = extract_items_from_offer(pdf_text, proveedor)
+all_data = []
 
-        if df.empty:
-            st.warning(f"⚠️ No se encontraron datos estructurados en el archivo: {file.name}")
-        else:
-            all_data.append(df)
-
-    if all_data:
-        df_total = pd.concat(all_data, ignore_index=True)
-        st.success("✅ Datos extraídos correctamente")
-        st.dataframe(df_total, use_container_width=True)
-
-        st.subheader("💰 Total por Proveedor")
-        total = df_total.groupby("Proveedor")["Valor Total (USD)"].sum().reset_index()
-        st.table(total)
-
-        st.subheader("📊 Comparativa por Código")
-        comparativa = df_total.pivot_table(index="Código", columns="Proveedor", values="Precio Unitario (USD)")
-        st.dataframe(comparativa, use_container_width=True)
-
-        st.subheader("🏆 Mejores Precios por Producto")
-        mejores = comparativa.idxmin(axis=1).reset_index()
-        mejores.columns = ["Código", "Proveedor más económico"]
-        st.table(mejores)
-
-        st.subheader("⚠️ Alertas de precios fuera de rango")
-        alerta = comparativa.copy()
-        for codigo in alerta.index:
-            precios = alerta.loc[codigo].dropna()
-            if not precios.empty:
-                min_val = precios.min()
-                alerta.loc[codigo] = ["⚠️ Alto" if v > min_val * 1.3 else "" for v in precios]
-        st.dataframe(alerta.replace("", pd.NA).dropna(how="all"), use_container_width=True)
-
-        st.subheader("💡 Ahorro potencial por ítem")
-        ahorro = df_total.copy()
-        ahorro["Min. Precio por Código"] = ahorro.groupby("Código")["Precio Unitario (USD)"].transform("min")
-        ahorro["Sobreprecio"] = ahorro["Precio Unitario (USD)"] - ahorro["Min. Precio por Código"]
-        ahorro["Ahorro Potencial (USD)"] = ahorro["Sobreprecio"] * ahorro["Cantidad (KG)"]
-        ahorro_final = ahorro.groupby("Proveedor")["Ahorro Potencial (USD)"].sum().reset_index()
-        st.dataframe(ahorro_final, use_container_width=True)
-
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df_total.to_excel(writer, sheet_name='Datos Totales', index=False)
-            total.to_excel(writer, sheet_name='Totales Proveedor', index=False)
-            comparativa.to_excel(writer, sheet_name='Comparativa', index=True)
-            mejores.to_excel(writer, sheet_name='Mejores Precios', index=False)
-            alerta.to_excel(writer, sheet_name='Alertas Precios', index=True)
-            ahorro_final.to_excel(writer, sheet_name='Ahorro Potencial', index=False)
-        buffer.seek(0)
-
-        st.download_button(
-            label="📥 Descargar Excel con análisis completo",
-            data=buffer,
-            file_name="analisis_comparativo_ofertas.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+# Procesar PDFs
+for file in uploaded_files:
+    raw_text = extract_text_from_pdf(file)
+    items = parse_offer_text(raw_text)
+    if items:
+        all_data.extend(items)
     else:
-        st.error("❌ No se encontraron datos útiles en los archivos cargados.")
+        st.warning(f"⚠️ No se encontraron datos estructurados en el archivo: {file.name}")
+
+# Procesar texto manual
+if manual_text.strip():
+    manual_items = parse_offer_text(manual_text)
+    if manual_items:
+        all_data.extend(manual_items)
+        st.success("✅ Datos extraídos del texto manual correctamente.")
+    else:
+        st.warning("⚠️ No se detectaron ítems válidos en el texto ingresado.")
+
+if all_data:
+    df = pd.DataFrame(all_data)
+
+    st.markdown("### 📊 Comparativa Consolidada")
+    st.dataframe(df, use_container_width=True)
+
+    st.markdown("### 💰 Total por Proveedor")
+    total_df = df.groupby("Proveedor")["Valor Total (USD)"].sum().reset_index()
+    st.dataframe(total_df)
+
+    # Proveedor sugerido (mínimo total)
+    mejor = total_df.loc[total_df["Valor Total (USD)"].idxmin()]
+    st.success(f"🏆 **Proveedor sugerido:** {mejor['Proveedor']} (USD {mejor['Valor Total (USD)']:.2f})")
+else:
+    st.error("❌ No se encontraron datos útiles en los archivos cargados o texto ingresado.")
+
 
 
           
