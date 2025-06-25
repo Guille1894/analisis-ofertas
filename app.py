@@ -7,7 +7,7 @@ from io import BytesIO
 st.set_page_config(page_title="Análisis de Ofertas de Compra", layout="wide")
 st.title("📄 Análisis Automático de Ofertas de Compra")
 
-uploaded_files = st.file_uploader("Cargar una o más ofertas en PDF (hasta 6)", type=["pdf"], accept_multiple_files=True, key=\"upload_pdf_main\")
+uploaded_files = st.file_uploader("Cargar una o más ofertas en PDF (hasta 6)", type=["pdf"], accept_multiple_files=True, key="upload_pdf_main")
 
 
 @st.cache_data
