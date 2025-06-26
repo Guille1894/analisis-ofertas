@@ -1,101 +1,86 @@
 import streamlit as st
+import pdfplumber
 import pandas as pd
-import fitz  # PyMuPDF
 import re
+import tempfile
+from io import BytesIO
 
-st.set_page_config(page_title="Análisis Automático de Ofertas de Compra")
-st.title("📄 Análisis Automático de Ofertas de Compra")
+st.set_page_config(page_title="Comparador de Ofertas PDF", layout="wide")
+st.title("📄 Comparador Automático de Ofertas en PDF")
 
-uploaded_files = st.file_uploader("Cargar una o más ofertas en PDF (hasta 6)", type=["pdf"], accept_multiple_files=True)
+st.markdown("Subí una o varias ofertas en PDF. La app extraerá los ítems, los comparará y recomendará el mejor proveedor.")
 
-st.markdown("### 📝 O pegar texto manualmente (opcional)")
-manual_text = st.text_area("Ingresar texto de una cotización:", height=300)
+uploaded_files = st.file_uploader("Cargar PDFs", type=["pdf"], accept_multiple_files=True)
 
-def extract_text_from_pdf(file):
-    try:
-        doc = fitz.open(stream=file.read(), filetype="pdf")
-        return "\n".join([page.get_text() for page in doc])
-    except Exception:
-        return ""
+def extraer_texto(pdf_file):
+    text = ""
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() + "\n"
+    return text
 
-def parse_mma_format(text):
+def parsear_items(texto):
+    patrones = re.findall(r"(\d{3,5})\s+([A-Z0-9./\-]+)\s+(\d+)\s+([A-ZÁÉÍÓÚÑ()\-/,.;°\s\d]+?)\s+(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))\s+(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))", texto)
     items = []
-    for line in text.split("\n"):
-        match = re.search(r'(\d{3})\s+(\S+)\s+(\d+)\s+(.*?)\s+(\d{1,3}[.,]\d{2})\s+(\d{1,3}[.,]\d{2})$', line)
+    for p in patrones:
+        items.append({
+            "Código": p[1],
+            "Descripción": p[3].strip(),
+            "Cantidad": int(p[2]),
+            "Precio Unitario (USD)": float(p[4].replace(".", "").replace(",", ".")),
+            "Valor Total (USD)": float(p[5].replace(".", "").replace(",", "."))
+        })
+    return items
+
+def buscar_condicion(texto, clave):
+    patrones = {
+        "forma_pago": r"(forma de pago|pago:?)\s*:?\s*(.+?)(\n|$)",
+        "plazo_entrega": r"(plazo de entrega|entrega:?)\s*:?\s*(.+?)(\n|$)",
+        "incoterm": r"(incoterm|lugar de entrega|transporte:?)\s*:?\s*(.+?)(\n|$)"
+    }
+    if clave in patrones:
+        match = re.search(patrones[clave], texto, re.IGNORECASE)
         if match:
-            items.append({
-                "Código": match.group(2),
-                "Descripción": match.group(4).strip(),
-                "Cantidad": int(match.group(3)),
-                "Precio Unitario (USD)": float(match.group(5).replace(",", ".")),
-                "Valor Total (USD)": float(match.group(6).replace(",", ".")),
-                "Proveedor": "MMA"
-            })
-    return items
+            return match.group(2).strip()
+    return ""
 
-def parse_cameron_format(text):
-    items = []
-    lines = text.split("\n")
-    for i, line in enumerate(lines):
-        if re.search(r'\d+\s+[A-Z0-9.-]+\s+\d+\s+EA\s+\d{1,3}[.,]\d{2}\s+\d{1,3}[.,]\d{2}', line):
-            parts = line.split()
-            try:
-                codigo = parts[1]
-                cantidad = int(parts[2])
-                unit = float(parts[5].replace(",", ""))
-                total = float(parts[6].replace(",", ""))
-                descripcion = lines[i + 1].strip() if i + 1 < len(lines) else ""
-                items.append({
-                    "Código": codigo,
-                    "Descripción": descripcion,
-                    "Cantidad": cantidad,
-                    "Precio Unitario (USD)": unit,
-                    "Valor Total (USD)": total,
-                    "Proveedor": "CAMERON"
-                })
-            except:
-                continue
-    return items
+todos = []
 
-def detect_format_and_parse(text):
-    if "Oferta N° 1020684" in text:
-        return parse_mma_format(text)
-    elif "CAMERON ARGENTINA" in text or "Document number" in text:
-        return parse_cameron_format(text)
-    return []
+if uploaded_files:
+    for archivo in uploaded_files:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(archivo.read())
+            texto = extraer_texto(tmp.name)
 
-all_items = []
+        proveedor = archivo.name.replace(".pdf", "")
+        items = parsear_items(texto)
+        if items:
+            for item in items:
+                item["Proveedor"] = proveedor
+                item["Plazo Entrega"] = buscar_condicion(texto, "plazo_entrega")
+                item["Forma de Pago"] = buscar_condicion(texto, "forma_pago")
+                item["Incoterm"] = buscar_condicion(texto, "incoterm")
+            todos.extend(items)
+        else:
+            st.warning(f"No se detectaron ítems válidos en: {archivo.name}")
 
-# Archivos PDF
-for file in uploaded_files:
-    raw_text = extract_text_from_pdf(file)
-    parsed_items = detect_format_and_parse(raw_text)
-    if parsed_items:
-        all_items.extend(parsed_items)
-    else:
-        st.warning(f"⚠️ No se encontraron datos estructurados en el archivo: {file.name}")
-
-# Texto pegado manualmente
-if manual_text.strip():
-    parsed_items = detect_format_and_parse(manual_text)
-    if parsed_items:
-        all_items.extend(parsed_items)
-        st.success("✅ Datos extraídos del texto manual correctamente.")
-    else:
-        st.warning("⚠️ No se detectaron ítems válidos en el texto ingresado.")
-
-# Mostrar resultados
-if all_items:
-    df = pd.DataFrame(all_items)
-    st.markdown("### 📊 Comparativa Consolidada")
+if todos:
+    df = pd.DataFrame(todos)
+    st.subheader("📊 Comparativa Consolidada")
     st.dataframe(df, use_container_width=True)
 
-    st.markdown("### 💰 Total por Proveedor")
-    total_df = df.groupby("Proveedor")["Valor Total (USD)"].sum().reset_index()
-    st.dataframe(total_df)
+    resumen = df.groupby("Proveedor")["Valor Total (USD)"].sum().reset_index()
+    resumen = resumen.sort_values("Valor Total (USD)")
+    mejor = resumen.iloc[0]
 
-    mejor = total_df.loc[total_df["Valor Total (USD)"].idxmin()]
-    st.success(f"🏆 **Proveedor sugerido:** {mejor['Proveedor']} (USD {mejor['Valor Total (USD)']:.2f})")
+    st.subheader("💰 Total por Proveedor")
+    st.dataframe(resumen)
+
+    st.success(f"🏆 Proveedor recomendado: {mejor['Proveedor']} (USD {mejor['Valor Total (USD)']:.2f})")
+
+    output = BytesIO()
+    df.to_excel(output, index=False)
+    output.seek(0)
+    st.download_button("📥 Descargar Excel comparativo", output, file_name="comparativa_ofertas.xlsx")
 else:
-    st.error("❌ No se encontraron datos útiles en los archivos cargados o texto ingresado.")
-
+    st.info("Subí uno o más archivos PDF para iniciar la comparativa.")
